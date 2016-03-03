@@ -123,6 +123,9 @@ pub trait BlockChainClient : Sync + Send {
 	/// Get block total difficulty.
 	fn block_total_difficulty(&self, id: BlockId) -> Option<U256>;
 
+	/// Get block hash.
+	fn block_hash(&self, id: BlockId) -> Option<H256>;
+
 	/// Get address code.
 	fn code(&self, address: &Address) -> Option<Bytes>;
 
@@ -264,6 +267,13 @@ impl Client {
 	fn check_and_close_block(&self, block: &PreverifiedBlock) -> Result<ClosedBlock, ()> {
 		let engine = self.engine.deref().deref();
 		let header = &block.header;
+
+		// Check the block isn't so old we won't be able to enact it.
+		let best_block_number = self.chain.read().unwrap().best_block_number();
+		if best_block_number >= HISTORY && header.number() <= best_block_number - HISTORY {
+			warn!(target: "client", "Block import failed for #{} ({})\nBlock is ancient (current best block: #{}).", header.number(), header.hash(), best_block_number);
+			return Err(());
+		}
 
 		// Verify Block Family
 		let verify_family_result = verify_block_family(&header, &block.bytes, engine, self.chain.read().unwrap().deref());
@@ -531,6 +541,11 @@ impl BlockChainClient for Client {
 	fn block_total_difficulty(&self, id: BlockId) -> Option<U256> {
 		let chain = self.chain.read().unwrap();
 		Self::block_hash(&chain, id).and_then(|hash| chain.block_details(&hash)).map(|d| d.total_difficulty)
+	}
+
+	fn block_hash(&self, id: BlockId) -> Option<H256> {
+		let chain = self.chain.read().unwrap();
+		Self::block_hash(&chain, id)
 	}
 
 	fn code(&self, address: &Address) -> Option<Bytes> {
