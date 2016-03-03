@@ -128,6 +128,24 @@ fn can_handle_long_fork() {
 }
 
 #[test]
+fn can_handle_long_fork_state() {
+	let client_result = generate_dummy_client(1);
+	let client = client_result.reference();
+	client.import_verified_blocks(&IoChannel::disconnected());
+
+	let (jdb, root) = client.state().drop();
+	let jdb_fork_1a = jdb.clone();
+	let mut state_1a = State::from_existing(jdb, root);
+	state_1a.add_balance(x!(106u64), x!(200u64));
+	let (jdb_fork_1a, state_root_1a) = state_1a.drop();
+	jdb_fork_1a.commit();
+	push_blocks_to_client_with_state(client, 45, 2, 50);
+	client.import_verified_blocks(&IoChannel::disconnected());
+
+	assert_eq!(52, client.chain_info().best_block_number);
+}
+
+#[test]
 fn can_mine() {
 	let dummy_blocks = get_good_dummy_block_seq(2);
 	let client_result = get_test_client_with_blocks(vec![dummy_blocks[0].clone()]);
