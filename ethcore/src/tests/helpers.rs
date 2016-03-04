@@ -172,7 +172,7 @@ pub fn generate_dummy_client(block_number: u32) -> GuardedTempResult<Arc<Client>
 pub fn push_blocks_to_client(client: &Arc<Client>, timestamp_salt: u64, starting_number: usize, block_number: usize) {
 	let test_spec = get_test_spec();
 	let test_engine = test_spec.to_engine().unwrap();
-	push_blocks_to_client_with_state(client, timestamp_salt, starting_number, block_number, test_engine.spec().genesis_header().state_root);
+	push_blocks_to_client_with_state(client, timestamp_salt, starting_number, block_number, &test_engine.spec().genesis_header().state_root);
 }
 
 pub fn push_blocks_to_client_with_state(client: &Arc<Client>, timestamp_salt: u64, starting_number: usize, block_number: usize, state_root: &H256) {

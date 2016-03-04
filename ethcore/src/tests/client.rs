@@ -129,20 +129,29 @@ fn can_handle_long_fork() {
 
 #[test]
 fn can_handle_long_fork_state() {
-	let client_result = generate_dummy_client(1);
-	let client = client_result.reference();
-	client.import_verified_blocks(&IoChannel::disconnected());
+	use state::State;
 
-	let (jdb, root) = client.state().drop();
-	let jdb_fork_1a = jdb.clone();
-	let mut state_1a = State::from_existing(jdb, root);
-	state_1a.add_balance(x!(106u64), x!(200u64));
-	let (jdb_fork_1a, state_root_1a) = state_1a.drop();
-	jdb_fork_1a.commit();
-	push_blocks_to_client_with_state(client, 45, 2, 50);
-	client.import_verified_blocks(&IoChannel::disconnected());
+	let temp = RandomTempPath::new();
 
-	assert_eq!(52, client.chain_info().best_block_number);
+	let state_root_1a = {
+		let client = Arc::new(Client::new(ClientConfig::default(), get_test_spec(), temp.as_path(), IoChannel::disconnected()).unwrap());
+		// forking state -> fork (1a)
+		let (root, jdb) = client.state().drop();
+		let jdb_fork_1a = jdb.clone();
+		let mut state_1a = State::from_existing(jdb_fork_1a, root, U256::from(0));
+		state_1a.add_balance(&Address::from_str("0f572e5295c57f15886f9b263e2f6d2d6c7b5ec6").unwrap(), &U256::from(100));
+		state_1a.commit();
+		let (state_root_1a, mut jdb_fork_1a) = state_1a.drop();
+		jdb_fork_1a.commit(99999, &state_root_1a, None);
+		state_root_1a
+	};
+
+	let client = Arc::new(Client::new(ClientConfig::default(), get_test_spec(), temp.as_path(), IoChannel::disconnected()).unwrap());
+
+	// adding 50 blocks with the (1a) fork
+	push_blocks_to_client_with_state(&client, 45, 1, 50, &state_root_1a);
+	client.import_verified_blocks(&IoChannel::disconnected());
+	assert_eq!(51, client.chain_info().best_block_number);
 }
 
 #[test]
