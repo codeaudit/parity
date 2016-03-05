@@ -100,21 +100,41 @@ impl JournalDB {
 
 		// TODO: store reclaim_period.
 
-		// when we make a new commit, we journal the inserts and removes.
-		// for each end_era that we journaled that we are no passing by, 
-		// we remove all of its removes assuming it is canonical and all
-		// of its inserts otherwise.
+		// When we make a new commit, we make a journal of all blocks in the recent history and record
+		// all keys that were inserted and deleted. The journal is ordered by era; multiple commits can
+		// share the same era. This forms a data structure similar to a queue but whose items are tuples.
+		// By the time comes to remove a tuple from the queue (i.e. then the era passes from recent history
+		// into ancient history) then only one commit from the tuple is considered canonical. This commit
+		// is kept in the main backing database, whereas any others from the same era are reverted.
+		// 
+		// It is possible that a key, properly available in the backing database be deleted and re-inserted
+		// in the recent history queue, yet have both operations in commits that are eventually non-canonical.
+		// To avoid the original, and still required, key from being deleted, we maintain a reference count
+		// which includes an original key, if any.
+		// 
+		// The semantics of the `counter` are:
+		// insert key k:
+		//   counter already contains k: count += 1
+		//   counter doesn't contain k:
+		//     backing db contains k: count = 1
+		//     backing db doesn't contain k: insert into backing db
+		// delete key k:
+		//   counter contains k (count is asserted to be non-zero): 
+		//     count > 1: counter -= 1
+		//     count == 1: remove counter
+		//   counter doesn't contain k: remove key from backing db
 		//
-		// We also keep reference counters for each key inserted in the journal to handle 
-		// the following cases where key K must not be deleted from the DB when processing removals :
-		// Given H is the journal size in eras, 0 <= C <= H.
-		// Key K is removed in era A(N) and re-inserted in canonical era B(N + C).
-		// Key K is removed in era A(N) and re-inserted in non-canonical era B`(N + C).
-		// Key K is added in non-canonical era A'(N) canonical B(N + C).
+		// Practically, this means that for each commit block turning from recent to ancient we do the
+		// following:
+		// is_canonical:
+		//   inserts: Left alone in the backing database.
+		//   deletes: Enacted; however, recent history queue is checked for ongoing references. This is
+		//            reduced as a preference to deletion from the backing database.
+		// !is_canonical:
+		//   inserts: Reverted; however, recent history queue is checked for ongoing references. This is
+		//            reduced as a preference to deletion from the backing database.
+		//   deletes: Ignored.
 		//
-		// The counter is encreased each time a key is inserted in the journal in the commit. The list of insertions
-		// is saved with the era record. When the era becomes end_era and goes out of journal the counter is decreased
-		// and the key is safe to delete.
 
 		// record new commit's details.
 		let batch = WriteBatch::new();
@@ -227,7 +247,7 @@ impl JournalDB {
 	}
 
 	fn read_counters(db: &DB) -> HashMap<H256, i32> {
-		let mut res = HashMap::new();
+		let mut counters = HashMap::new();
 		if let Some(val) = db.get(&LAST_ERA_KEY).expect("Low-level database error.") {
 			let mut era = decode::<u64>(&val) + 1;
 			loop {
@@ -239,9 +259,10 @@ impl JournalDB {
 					&r.drain()
 				}).expect("Low-level database error.") {
 					let rlp = Rlp::new(&rlp_data);
-					let to_add: Vec<H256> = rlp.val_at(1);
-					for h in to_add {
-						*res.entry(h).or_insert(0) += 1;
+					let inserts: Vec<H256> = rlp.val_at(1);
+					for k in inserts {
+						// increase counter for the key `k` that got inserted in this recent block.
+						*counters.entry(k).or_insert(0) += 1;
 					}
 					index += 1;
 				};
@@ -251,8 +272,8 @@ impl JournalDB {
 				era += 1;
 			}
 		}
-		trace!("Recovered {} counters", res.len());
-		res
+		trace!("Recovered {} counters", counters.len());
+		counters
 	}
 }
 
