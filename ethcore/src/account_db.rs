@@ -26,6 +26,9 @@ impl<'db> AccountDB<'db> {
 			address: x!(address.clone()),
 		}
 	}
+
+	/// Get the address to which this AccountDB is tied.
+	pub fn combined(&self, key: &H256) -> H256 { combine_key(&self.address, key) }
 }
 
 impl<'db> HashDB for AccountDB<'db>{
@@ -78,6 +81,9 @@ impl<'db> AccountDBMut<'db> {
 	pub fn immutable(&'db self) -> AccountDB<'db> {
 		AccountDB { db: self.db, address: self.address.clone() }
 	}
+
+	/// Get the address to which this AccountDB is tied.
+	pub fn combined(&self, key: &H256) -> H256 { combine_key(&self.address, key) }
 }
 
 impl<'db> HashDB for AccountDBMut<'db>{

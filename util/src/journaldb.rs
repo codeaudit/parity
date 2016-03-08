@@ -35,6 +35,7 @@ pub struct JournalDB {
 	overlay: MemoryDB,
 	backing: Arc<Database>,
 	counters: Option<Arc<RwLock<HashMap<H256, i32>>>>,
+	last_era: u64,
 }
 
 impl Clone for JournalDB {
@@ -43,6 +44,7 @@ impl Clone for JournalDB {
 			overlay: MemoryDB::new(),
 			backing: self.backing.clone(),
 			counters: self.counters.clone(),
+			last_era: 0,
 		}
 	}
 }
@@ -91,6 +93,7 @@ impl JournalDB {
 			overlay: MemoryDB::new(),
 			backing: Arc::new(backing),
 			counters: counters,
+			last_era: 0,
 		}
 	}
 
@@ -182,7 +185,7 @@ impl JournalDB {
 	}
 
 	fn replay_keys(inserts: &Vec<H256>, backing: &Database, counters: &mut HashMap<H256, i32>) {
-		trace!("replay_keys: inserts={:?}, counters={:?}", inserts, counters);
+//		println!("replay_keys: inserts={:?}, counters={:?}", inserts, counters);
 		for h in inserts {
 			if let Some(c) = counters.get_mut(h) {
 				// already counting. increment.
@@ -193,11 +196,11 @@ impl JournalDB {
 			// this is the first entry for this node in the journal.
 			// it is initialised to 1 if it was already in.
 			if Self::is_already_in(backing, h) {
-				trace!("replace_keys: Key {} was already in!", h);
+//				println!("replace_keys: Key {} was already in!", h);
 				counters.insert(h.clone(), 1);
 			}
 		}
-		trace!("replay_keys: (end) counters={:?}", counters);
+//		println!("replay_keys: (end) counters={:?}", counters);
 	}
 
 	fn kill_keys(deletes: Vec<H256>, counters: &mut HashMap<H256, i32>, batch: &DBTransaction) {
@@ -274,7 +277,9 @@ impl JournalDB {
 		//
 
 		// record new commit's details.
-		trace!("commit: #{} ({}), end era: {:?}", now, id, end);		
+		if now >= 48789 {
+			println!("commit: #{} ({}), end era: {:?}", now, id, end);		
+		}
 		let mut counters = self.counters.as_ref().unwrap().write().unwrap();
 		let batch = DBTransaction::new();
 		{
@@ -315,6 +320,10 @@ impl JournalDB {
 			inserts.iter().foreach(|&(k, _)| {r.append(&k);});
 			r.append(&removes);
 			Self::insert_keys(&inserts, &self.backing, &mut counters, &batch);
+			if now > 48748 {
+				println!("  Inserts: {:?}", inserts);
+				println!("  Deletes: {:?}", removes);
+			}
 			try!(batch.put(&last, r.as_raw()));
 			try!(batch.put(&LATEST_ERA_KEY, &encode(&now)));
 		}
@@ -344,6 +353,17 @@ impl JournalDB {
 
 		try!(self.backing.write(batch));
 //		trace!("JournalDB::commit() deleted {} nodes", deletes);
+
+//		#[cfg(test)]
+		if now >= 48790 {
+			let reconstructed = Self::read_counters(&self.backing);
+			if *counters != reconstructed {
+				println!("FAILED: {:?} != {:?}", *counters, reconstructed);
+				assert!(false);
+			}
+		}
+
+		self.last_era = now;
 		Ok(0)
 	}
 
@@ -364,7 +384,7 @@ impl JournalDB {
 					r.append(&&PADDING[..]);
 					&r.drain()
 				}).expect("Low-level database error.") {
-					trace!("read_counters: era={}, index={}", era, index);
+//					println!("read_counters: era={}, index={}", era, index);
 					let rlp = Rlp::new(&rlp_data);
 					let inserts: Vec<H256> = rlp.val_at(1);
 					Self::replay_keys(&inserts, db, &mut counters);
@@ -376,7 +396,7 @@ impl JournalDB {
 				era -= 1;
 			}
 		}
-		trace!("Recovered {} counters", counters.len());
+//		println!("Recovered {} counters\n\n", counters.len());
 		counters
 	}
 
@@ -420,10 +440,16 @@ impl HashDB for JournalDB {
 		self.lookup(key).is_some()
 	}
 
-	fn insert(&mut self, value: &[u8]) -> H256 { 
+	fn insert(&mut self, value: &[u8]) -> H256 {
 		self.overlay.insert(value)
 	}
 	fn emplace(&mut self, key: H256, value: Bytes) {
+//		if self.last_era == 48789 {
+			if key == x!("5972ffc0214427735e7745a766b85395f83f5073a7adeb2a7a2ac0f9f0ea520a") {
+				panic!();
+			}
+//		}
+
 		self.overlay.emplace(key, value); 
 	}
 	fn kill(&mut self, key: &H256) { 
@@ -436,6 +462,7 @@ mod tests {
 	use common::*;
 	use super::*;
 	use hashdb::*;
+	use log::init_log;
 
 	#[test]
 	fn insert_same_in_fork() {
@@ -564,19 +591,28 @@ mod tests {
 
 	#[test]
 	fn fork_same_key() {
+		let mut dir = ::std::env::temp_dir();
+		dir.push(H32::random().hex());
+
+		let foo;
 		// history is 1
-		let mut jdb = JournalDB::new_temp();
-		jdb.commit(0, &b"0".sha3(), None).unwrap();
+		{
+			let mut jdb = JournalDB::new(dir.to_str().unwrap());
+			jdb.commit(0, &b"0".sha3(), None).unwrap();
 
-		let foo = jdb.insert(b"foo");
-		jdb.commit(1, &b"1a".sha3(), Some((0, b"0".sha3()))).unwrap();
+			foo = jdb.insert(b"foo");
+			jdb.commit(1, &b"1a".sha3(), Some((0, b"0".sha3()))).unwrap();
 
-		jdb.insert(b"foo");
-		jdb.commit(1, &b"1b".sha3(), Some((0, b"0".sha3()))).unwrap();
-		assert!(jdb.exists(&foo));
-
-		jdb.commit(2, &b"2a".sha3(), Some((1, b"1a".sha3()))).unwrap();
-		assert!(jdb.exists(&foo));
+			jdb.insert(b"foo");
+			jdb.commit(1, &b"1b".sha3(), Some((0, b"0".sha3()))).unwrap();
+			assert!(jdb.exists(&foo));
+		}
+		// reopen
+		{
+			let mut jdb = JournalDB::new(dir.to_str().unwrap());
+			jdb.commit(2, &b"2a".sha3(), Some((1, b"1a".sha3()))).unwrap();
+			assert!(jdb.exists(&foo));
+		}
 	}
 
 
@@ -611,10 +647,9 @@ mod tests {
 	}
 
 	#[test]
-	fn reopen_remove() {
+	fn reopen_remove_short() {
 		let mut dir = ::std::env::temp_dir();
 		dir.push(H32::random().hex());
-		let bar = H256::random();
 
 		let foo = {
 			let mut jdb = JournalDB::new(dir.to_str().unwrap());
@@ -641,6 +676,112 @@ mod tests {
 			assert!(!jdb.exists(&foo));
 		}
 	}
+
+	#[test]
+	fn broken_assert() {
+		let mut dir = ::std::env::temp_dir();
+		dir.push(H32::random().hex());
+
+		let mut jdb = JournalDB::new(dir.to_str().unwrap());
+		// history is 1
+		let foo = jdb.insert(b"foo");
+		jdb.commit(1, &b"1".sha3(), Some((0, b"0".sha3()))).unwrap();
+
+		// foo is ancient history.
+
+		jdb.remove(&foo);
+		jdb.commit(2, &b"2".sha3(), Some((1, b"1".sha3()))).unwrap();
+
+		jdb.insert(b"foo");
+		jdb.commit(3, &b"3".sha3(), Some((2, b"2".sha3()))).unwrap();	// BROKEN
+		assert!(jdb.exists(&foo));
+
+		jdb.remove(&foo);
+		jdb.commit(4, &b"4".sha3(), Some((3, b"3".sha3()))).unwrap();
+
+		jdb.commit(5, &b"5".sha3(), Some((4, b"4".sha3()))).unwrap();
+		assert!(!jdb.exists(&foo));
+	}
+	
+	#[test]
+	fn reopen_remove_two() {
+		let mut dir = ::std::env::temp_dir();
+		dir.push(H32::random().hex());
+
+		let foo = {
+			let mut jdb = JournalDB::new(dir.to_str().unwrap());
+			// history is 1
+			let foo = jdb.insert(b"foo");
+			jdb.commit(0, &b"0".sha3(), None).unwrap();
+			jdb.commit(1, &b"1".sha3(), None).unwrap();
+
+			// foo is ancient history.
+
+			jdb.insert(b"foo");
+			jdb.commit(2, &b"2".sha3(), Some((0, b"0".sha3()))).unwrap();
+			foo
+		};
+
+		{
+			let mut jdb = JournalDB::new(dir.to_str().unwrap());
+			jdb.remove(&foo);
+			jdb.commit(3, &b"3".sha3(), Some((1, b"1".sha3()))).unwrap();
+			assert!(jdb.exists(&foo));
+			jdb.remove(&foo);
+			jdb.commit(4, &b"4".sha3(), Some((2, b"2".sha3()))).unwrap();
+			jdb.commit(5, &b"5".sha3(), Some((3, b"3".sha3()))).unwrap();
+			jdb.commit(6, &b"6".sha3(), Some((4, b"4".sha3()))).unwrap();
+			assert!(!jdb.exists(&foo));
+		}
+	}
+	
+	#[test]
+	fn reopen_remove_three() {
+		init_log();
+
+		let mut dir = ::std::env::temp_dir();
+		dir.push(H32::random().hex());
+
+		let foo = b"foo".sha3();
+
+		{
+			let mut jdb = JournalDB::new(dir.to_str().unwrap());
+			// history is 1
+			jdb.insert(b"foo");
+			jdb.commit(0, &b"0".sha3(), None).unwrap();
+			jdb.commit(1, &b"1".sha3(), None).unwrap();
+
+			// foo is ancient history.
+
+			jdb.remove(&foo);
+			jdb.commit(2, &b"2".sha3(), Some((0, b"0".sha3()))).unwrap();
+			assert!(jdb.exists(&foo));
+
+			jdb.insert(b"foo");
+			jdb.commit(3, &b"3".sha3(), Some((1, b"1".sha3()))).unwrap();
+			assert!(jdb.exists(&foo));
+
+		// incantation to reopen the db
+		}; { let mut jdb = JournalDB::new(dir.to_str().unwrap());
+
+			jdb.remove(&foo);
+			jdb.commit(4, &b"4".sha3(), Some((2, b"2".sha3()))).unwrap();
+			assert!(jdb.exists(&foo));
+
+		// incantation to reopen the db
+		}; { let mut jdb = JournalDB::new(dir.to_str().unwrap());
+
+			jdb.commit(5, &b"5".sha3(), Some((3, b"3".sha3()))).unwrap();
+			assert!(jdb.exists(&foo));
+
+		// incantation to reopen the db
+		}; { let mut jdb = JournalDB::new(dir.to_str().unwrap());
+
+			jdb.commit(6, &b"6".sha3(), Some((4, b"4".sha3()))).unwrap();
+			assert!(!jdb.exists(&foo));
+		}
+	}
+	
 	#[test]
 	fn reopen_fork() {
 		let mut dir = ::std::env::temp_dir();
