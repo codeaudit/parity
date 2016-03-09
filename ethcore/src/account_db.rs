@@ -13,22 +13,19 @@ pub struct AccountDB<'db> {
 
 #[inline]
 fn combine_key<'a>(address: &'a H256, key: &'a H256) -> H256 {
-	let mut addr_hash = address.sha3();
-	// preserve 96 bits of original key for db lookup
-	addr_hash[0..12].clone_from_slice(&[0u8; 12]); 
-	&addr_hash ^ key
+	address ^ key
 }
 
 impl<'db> AccountDB<'db> {
 	pub fn new(db: &'db HashDB, address: &Address) -> AccountDB<'db> {
 		AccountDB {
 			db: db,
-			address: x!(address.clone()),
+			address: x!(address),
 		}
 	}
 
 	/// Get the address to which this AccountDB is tied.
-	pub fn combined(&self, key: &H256) -> H256 { combine_key(&self.address, key) }
+	pub fn address(&self) -> Address { x!(self.address) }
 }
 
 impl<'db> HashDB for AccountDB<'db>{
@@ -73,7 +70,7 @@ impl<'db> AccountDBMut<'db> {
 	pub fn new(db: &'db mut HashDB, address: &Address) -> AccountDBMut<'db> {
 		AccountDBMut {
 			db: db,
-			address: x!(address.clone()),
+			address: x!(address),
 		}
 	}
 
@@ -83,7 +80,7 @@ impl<'db> AccountDBMut<'db> {
 	}
 
 	/// Get the address to which this AccountDB is tied.
-	pub fn combined(&self, key: &H256) -> H256 { combine_key(&self.address, key) }
+	pub fn address(&self) -> Address { x!(self.address) }
 }
 
 impl<'db> HashDB for AccountDBMut<'db>{
@@ -109,6 +106,7 @@ impl<'db> HashDB for AccountDBMut<'db>{
 		let k = value.sha3();
 		let ak = combine_key(&self.address, &k);
 		self.db.emplace(ak, value.to_vec());
+		println!("AccountDB::insert({}) account={:?}, sha3={:?}, used={:?}", value.pretty(), self.address, k, ak);
 		k
 	}
 

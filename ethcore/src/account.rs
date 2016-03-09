@@ -169,7 +169,7 @@ impl Account {
 		trace!("Account::cache_code: ic={}; self.code_hash={:?}, self.code_cache={}", self.is_cached(), self.code_hash, self.code_cache.pretty());
 		self.is_cached() ||
 			match self.code_hash {
-				Some(ref h) => match db.lookup(&db.combined(h)) {
+				Some(ref h) => match db.lookup(h) {
 					Some(x) => { self.code_cache = x.to_vec(); true },
 					_ => {
 						warn!("Failed reverse lookup of {}", h);
@@ -222,10 +222,13 @@ impl Account {
 
 	/// Commit any unsaved code. `code_hash` will always return the hash of the `code_cache` after this.
 	pub fn commit_code(&mut self, db: &mut AccountDBMut) {
-		println!("Commiting code of {:?} - {:?}, {:?}", self, self.code_hash.is_none(), self.code_cache.is_empty());
 		match (self.code_hash.is_none(), self.code_cache.is_empty()) {
 			(true, true) => self.code_hash = Some(SHA3_EMPTY),
-			(true, false) => self.code_hash = Some(db.insert(self.code_cache)),
+			(true, false) => {
+				let h = db.insert(&self.code_cache);
+				println!("Commiting code of {:?} - {:?}, {:?} hash: {}", db.address(), self.code_hash.is_none(), self.code_cache.is_empty(), &h);
+				self.code_hash = Some(h);
+			}
 			(false, _) => {},
 		}
 	}
