@@ -30,10 +30,6 @@ struct RefInfo {
 	in_archive: bool,
 }
 
-impl RefInfo {
-	fn refs(&self) -> usize { self.queue_refs + if self.in_archive {1} else {0} }
-}
-
 impl HeapSizeOf for RefInfo {
 	fn heap_size_of_children(&self) -> usize { 0 }
 }
@@ -168,7 +164,6 @@ impl JournalDB {
 				deletes += 1;
 			}
 		}
-		trace!("commit: Inserted {}, Deleted {} nodes", inserts, deletes);
 		inserts + deletes
 	}
 
@@ -195,11 +190,10 @@ impl JournalDB {
 
 	fn insert_keys(inserts: &Vec<(H256, Bytes)>, backing: &Database, refs: &mut HashMap<H256, RefInfo>, batch: &DBTransaction, trace: bool) {
 		for &(ref h, ref d) in inserts {
-			let tr = trace || h == &x!("ad6ee12bab5abf31d7e6f58c0497ea4389a10ea8e6d7863b668a8446ab2a0e6d");
 			if let Some(c) = refs.get_mut(h) {
 				// already counting. increment.
 				c.queue_refs += 1;
-				if tr {
+				if trace {
 					trace!(target: "jdb.fine", "    insert({}): In queue: Incrementing refs to {}", h, c.queue_refs);
 				}
 				continue;
@@ -210,7 +204,7 @@ impl JournalDB {
 				// already in the backing DB. start counting, and remember it was already in.
 				Self::set_already_in(batch, &h);
 				refs.insert(h.clone(), RefInfo{queue_refs: 1, in_archive: true});
-				if tr {
+				if trace {
 					trace!(target: "jdb.fine", "    insert({}): New to queue, in DB: Recording and inserting into queue", h);
 				}
 				continue;
@@ -221,7 +215,7 @@ impl JournalDB {
 			assert!(!Self::is_already_in(backing, &h));
 			batch.put(&h.bytes(), d).expect("Low-level database error. Some issue with your hard disk?");
 			refs.insert(h.clone(), RefInfo{queue_refs: 1, in_archive: false});
-			if tr {
+			if trace {
 				trace!(target: "jdb.fine", "    insert({}): New to queue, not in DB: Inserting into queue and DB", h);
 			}
 		}
@@ -251,19 +245,18 @@ impl JournalDB {
 		// both are valid, but we switch between them depending on context.
 		//     All inserts in queue (i.e. those which may yet be reverted) have an entry in refs.
 		for h in deletes.iter() {
-			let tr = trace || h == &x!("ad6ee12bab5abf31d7e6f58c0497ea4389a10ea8e6d7863b668a8446ab2a0e6d");
 			let mut n: Option<RefInfo> = None;
 			if let Some(c) = refs.get_mut(h) {
 				if c.in_archive && from == RemoveFrom::Archive {
 					c.in_archive = false;
 					Self::reset_already_in(batch, h);
-					if tr {
+					if trace {
 						trace!(target: "jdb.fine", "    kill({}): In archive, 1 in queue: Reducing to queue only and recording", h);
 					}
 					continue;
 				} else if c.queue_refs > 1 {
 					c.queue_refs -= 1;
-					if tr {
+					if trace {
 						trace!(target: "jdb.fine", "    kill({}): In queue > 1 refs: Decrementing ref count to {}", h, c.queue_refs);
 					}
 					continue;
@@ -275,14 +268,14 @@ impl JournalDB {
 				Some(RefInfo{queue_refs: 1, in_archive: true}) => {
 					refs.remove(h);
 					Self::reset_already_in(batch, h);
-					if tr {
+					if trace {
 						trace!(target: "jdb.fine", "    kill({}): In archive, 1 in queue: Removing from queue and leaving in archive", h);
 					}
 				}
 				Some(RefInfo{queue_refs: 1, in_archive: false}) => {
 					refs.remove(h);
 					batch.delete(&h.bytes()).expect("Low-level database error. Some issue with your hard disk?");
-					if tr {
+					if trace {
 						trace!(target: "jdb.fine", "    kill({}): Not in archive, only 1 ref in queue: Removing from queue and DB", h);
 					}
 				}
@@ -290,7 +283,7 @@ impl JournalDB {
 					// Gets removed when moving from 1 to 0 additional refs. Should never be here at 0 additional refs.
 					//assert!(!Self::is_already_in(db, &h));
 					batch.delete(&h.bytes()).expect("Low-level database error. Some issue with your hard disk?");
-					if tr {
+					if trace {
 						trace!(target: "jdb.fine", "    kill({}): Not in queue - MUST BE IN ARCHIVE: Removing from DB", h);
 					}
 				}
@@ -349,7 +342,7 @@ impl JournalDB {
 		// record new commit's details.
 		let mut refs = self.refs.as_ref().unwrap().write().unwrap();
 		let batch = DBTransaction::new();
-		let mut trace_anyway = false;//now >= 57468
+		let trace = false;
 		{
 			let mut index = 0usize;
 			let mut last;
@@ -366,9 +359,8 @@ impl JournalDB {
 			}
 
 			let drained = self.overlay.drain();
-//			trace_anyway = trace_anyway || drained.contains_key(&x!("ad6ee12bab5abf31d7e6f58c0497ea4389a10ea8e6d7863b668a8446ab2a0e6d"));
 
-			if trace_anyway {
+			if trace {
 				trace!(target: "jdb", "commit: #{} ({}), end era: {:?}", now, id, end);
 			}
 
@@ -396,11 +388,11 @@ impl JournalDB {
 			r.begin_list(inserts.len());
 			inserts.iter().foreach(|&(k, _)| {r.append(&k);});
 			r.append(&removes);
-			Self::insert_keys(&inserts, &self.backing, &mut refs, &batch, trace_anyway);
-			if trace_anyway {
+			Self::insert_keys(&inserts, &self.backing, &mut refs, &batch, trace);
+			if trace {
 				let ins = inserts.iter().map(|&(k, _)| k).collect::<Vec<_>>();
-				trace!(target: "jdb", "  Inserts: {:?}", ins);
-				trace!(target: "jdb", "  Deletes: {:?}", removes);
+				trace!(target: "jdb.ops", "  Inserts: {:?}", ins);
+				trace!(target: "jdb.ops", "  Deletes: {:?}", removes);
 			}
 			try!(batch.put(&last, r.as_raw()));
 			try!(batch.put(&LATEST_ERA_KEY, &encode(&now)));
@@ -424,13 +416,13 @@ impl JournalDB {
 				if canon_id == rlp.val_at(0) {
 					// Collect keys to be removed. Canon block - remove the (enacted) deletes.
 					let deletes: Vec<H256> = rlp.val_at(2);
-					if trace_anyway {
-						trace!(target: "jdb", "  Expunging: {:?}", deletes);
+					if trace {
+						trace!(target: "jdb.ops", "  Expunging: {:?}", deletes);
 					}
-					Self::kill_keys(&deletes, &mut refs, &batch, RemoveFrom::Archive, trace_anyway);
+					Self::kill_keys(&deletes, &mut refs, &batch, RemoveFrom::Archive, trace);
 
-					if trace_anyway {
-						trace!(target: "jdb", "  Finalising: {:?}", inserts);
+					if trace {
+						trace!(target: "jdb.ops", "  Finalising: {:?}", inserts);
 					}
 					for k in inserts.iter() {
 						match refs.get(k).cloned() {
@@ -450,44 +442,50 @@ impl JournalDB {
 							}
 							Some( RefInfo{queue_refs: _, in_archive: true} ) => {
 								// Invalid! Reinserted the same key twice.
-								panic!("Key {} inserteds twice into same fork.", k);
+								panic!("Key {} inserted twice into same fork.", k);
 							}
 						}
 					}
 				} else {
 					// Collect keys to be removed. Non-canon block - remove the (reverted) inserts.
-					if trace_anyway {
-						trace!(target: "jdb", "  Reverting: {:?}", inserts);
+					if trace {
+						trace!(target: "jdb.ops", "  Reverting: {:?}", inserts);
 					}
-					Self::kill_keys(&inserts, &mut refs, &batch, RemoveFrom::Queue, trace_anyway);
+					Self::kill_keys(&inserts, &mut refs, &batch, RemoveFrom::Queue, trace);
 				}
 
 				try!(batch.delete(&last));
 				index += 1;
 			}
-			if trace_anyway {
+			if trace {
 				trace!(target: "jdb", "delete journal for time #{}.{}, (canon was {})", end_era, index, canon_id);
 			}
 		}
 
 		try!(self.backing.write(batch));
-//		trace!("JournalDB::commit() deleted {} nodes", deletes);
 
-//		#[cfg(test)]
-		if now >= 57468 {
-			let reconstructed = Self::read_refs(&self.backing);
-			if *refs != reconstructed {
-				let clean_refs = refs.iter().filter_map(|(k, v)| if reconstructed.get(k) == Some(v) {None} else {Some((k.clone(), v.clone()))}).collect::<HashMap<_, _>>();
-				let clean_recon = reconstructed.into_iter().filter_map(|(k, v)| if refs.get(&k) == Some(&v) {None} else {Some((k.clone(), v.clone()))}).collect::<HashMap<_, _>>();
-				warn!(target: "jdb", "mem: {:?}  !=  log: {:?}", clean_refs, clean_recon);
-				assert!(false);
-			}
+		// Comment out for now. TODO: automatically enable in tests.
+
+		if trace {
+			trace!(target: "jdb", "OK: {:?}", refs.clone());
 		}
-
-//		trace!(target: "jdb", "OK: {:?}", refs.clone());
 
 		self.last_era = now;
 		Ok(0)
+	}
+
+	#[cfg(test)]
+	fn can_reconstruct_refs(&self) -> bool {
+		let reconstructed = Self::read_refs(&self.backing);
+		let refs = self.refs.as_ref().unwrap().write().unwrap();
+		if *refs != reconstructed {
+			let clean_refs = refs.iter().filter_map(|(k, v)| if reconstructed.get(k) == Some(v) {None} else {Some((k.clone(), v.clone()))}).collect::<HashMap<_, _>>();
+			let clean_recon = reconstructed.into_iter().filter_map(|(k, v)| if refs.get(&k) == Some(&v) {None} else {Some((k.clone(), v.clone()))}).collect::<HashMap<_, _>>();
+			warn!(target: "jdb", "mem: {:?}  !=  log: {:?}", clean_refs, clean_recon);
+			false
+		} else {
+			true
+		}
 	}
 
 	fn payload(&self, key: &H256) -> Option<Bytes> {
@@ -507,7 +505,6 @@ impl JournalDB {
 					r.append(&&PADDING[..]);
 					&r.drain()
 				}).expect("Low-level database error.") {
-//					println!("read_refs: era={}, index={}", era, index);
 					let rlp = Rlp::new(&rlp_data);
 					let inserts: Vec<H256> = rlp.val_at(1);
 					Self::replay_keys(&inserts, db, &mut refs);
@@ -519,7 +516,6 @@ impl JournalDB {
 				era -= 1;
 			}
 		}
-//		println!("Recovered {} refs\n\n", refs.len());
 		refs
 	}
 
@@ -567,9 +563,6 @@ impl HashDB for JournalDB {
 		self.overlay.insert(value)
 	}
 	fn emplace(&mut self, key: H256, value: Bytes) {
-/*		if key == x!("ad6ee12bab5abf31d7e6f58c0497ea4389a10ea8e6d7863b668a8446ab2a0e6d");
-			panic!();
-		}*/
 		self.overlay.emplace(key, value); 
 	}
 	fn kill(&mut self, key: &H256) { 
@@ -591,17 +584,25 @@ mod tests {
 
 		let x = jdb.insert(b"X");
 		jdb.commit(1, &b"1".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		jdb.commit(2, &b"2".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		jdb.commit(3, &b"1002a".sha3(), Some((1, b"1".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		jdb.commit(4, &b"1003a".sha3(), Some((2, b"2".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 
 		jdb.remove(&x);
 		jdb.commit(3, &b"1002b".sha3(), Some((1, b"1".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		let x = jdb.insert(b"X");
 		jdb.commit(4, &b"1003b".sha3(), Some((2, b"2".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 
 		jdb.commit(5, &b"1004a".sha3(), Some((3, b"1002a".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		jdb.commit(6, &b"1005a".sha3(), Some((4, b"1003a".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 
 		assert!(jdb.exists(&x));
 	}
@@ -612,15 +613,20 @@ mod tests {
 		let mut jdb = JournalDB::new_temp();
 		let h = jdb.insert(b"foo");
 		jdb.commit(0, &b"0".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.exists(&h));
 		jdb.remove(&h);
 		jdb.commit(1, &b"1".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.exists(&h));
 		jdb.commit(2, &b"2".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.exists(&h));
 		jdb.commit(3, &b"3".sha3(), Some((0, b"0".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.exists(&h));
 		jdb.commit(4, &b"4".sha3(), Some((1, b"1".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(!jdb.exists(&h));
 	}
 
@@ -632,6 +638,7 @@ mod tests {
 		let foo = jdb.insert(b"foo");
 		let bar = jdb.insert(b"bar");
 		jdb.commit(0, &b"0".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.exists(&foo));
 		assert!(jdb.exists(&bar));
 
@@ -639,6 +646,7 @@ mod tests {
 		jdb.remove(&bar);
 		let baz = jdb.insert(b"baz");
 		jdb.commit(1, &b"1".sha3(), Some((0, b"0".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.exists(&foo));
 		assert!(jdb.exists(&bar));
 		assert!(jdb.exists(&baz));
@@ -646,17 +654,20 @@ mod tests {
 		let foo = jdb.insert(b"foo");
 		jdb.remove(&baz);
 		jdb.commit(2, &b"2".sha3(), Some((1, b"1".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.exists(&foo));
 		assert!(!jdb.exists(&bar));
 		assert!(jdb.exists(&baz));
 
 		jdb.remove(&foo);
 		jdb.commit(3, &b"3".sha3(), Some((2, b"2".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.exists(&foo));
 		assert!(!jdb.exists(&bar));
 		assert!(!jdb.exists(&baz));
 
 		jdb.commit(4, &b"4".sha3(), Some((3, b"3".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(!jdb.exists(&foo));
 		assert!(!jdb.exists(&bar));
 		assert!(!jdb.exists(&baz));
@@ -670,21 +681,25 @@ mod tests {
 		let foo = jdb.insert(b"foo");
 		let bar = jdb.insert(b"bar");
 		jdb.commit(0, &b"0".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.exists(&foo));
 		assert!(jdb.exists(&bar));
 
 		jdb.remove(&foo);
 		let baz = jdb.insert(b"baz");
 		jdb.commit(1, &b"1a".sha3(), Some((0, b"0".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 
 		jdb.remove(&bar);
 		jdb.commit(1, &b"1b".sha3(), Some((0, b"0".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 
 		assert!(jdb.exists(&foo));
 		assert!(jdb.exists(&bar));
 		assert!(jdb.exists(&baz));
 
 		jdb.commit(2, &b"2b".sha3(), Some((1, b"1b".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.exists(&foo));
 		assert!(!jdb.exists(&baz));
 		assert!(!jdb.exists(&bar));
@@ -697,15 +712,19 @@ mod tests {
 
 		let foo = jdb.insert(b"foo");
 		jdb.commit(0, &b"0".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.exists(&foo));
 
 		jdb.remove(&foo);
 		jdb.commit(1, &b"1".sha3(), Some((0, b"0".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		jdb.insert(b"foo");
 		assert!(jdb.exists(&foo));
 		jdb.commit(2, &b"2".sha3(), Some((1, b"1".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.exists(&foo));
 		jdb.commit(3, &b"2".sha3(), Some((0, b"2".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.exists(&foo));
 	}
 
@@ -719,18 +738,22 @@ mod tests {
 		{
 			let mut jdb = JournalDB::new(dir.to_str().unwrap());
 			jdb.commit(0, &b"0".sha3(), None).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 
 			foo = jdb.insert(b"foo");
 			jdb.commit(1, &b"1a".sha3(), Some((0, b"0".sha3()))).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 
 			jdb.insert(b"foo");
 			jdb.commit(1, &b"1b".sha3(), Some((0, b"0".sha3()))).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 			assert!(jdb.exists(&foo));
 		}
 		// reopen
 		{
 			let mut jdb = JournalDB::new(dir.to_str().unwrap());
 			jdb.commit(2, &b"2a".sha3(), Some((1, b"1a".sha3()))).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 			assert!(jdb.exists(&foo));
 		}
 	}
@@ -748,6 +771,7 @@ mod tests {
 			let foo = jdb.insert(b"foo");
 			jdb.emplace(bar.clone(), b"bar".to_vec());
 			jdb.commit(0, &b"0".sha3(), None).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 			foo
 		};
 
@@ -755,6 +779,7 @@ mod tests {
 			let mut jdb = JournalDB::new(dir.to_str().unwrap());
 			jdb.remove(&foo);
 			jdb.commit(1, &b"1".sha3(), Some((0, b"0".sha3()))).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 		}
 
 		{
@@ -762,6 +787,7 @@ mod tests {
 			assert!(jdb.exists(&foo));
 			assert!(jdb.exists(&bar));
 			jdb.commit(2, &b"2".sha3(), Some((1, b"1".sha3()))).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 			assert!(!jdb.exists(&foo));
 		}
 	}
@@ -777,16 +803,22 @@ mod tests {
 		// history is 4
 		let foo = jdb.insert(b"foo");
 		jdb.commit(0, &b"0".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		jdb.remove(&foo);
 		jdb.commit(1, &b"1".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		jdb.insert(b"foo");
 		jdb.commit(2, &b"2".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		jdb.remove(&foo);
 		jdb.commit(3, &b"3".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		jdb.insert(b"foo");
 		jdb.commit(4, &b"4".sha3(), Some((0, b"0".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		// expunge foo
 		jdb.commit(5, &b"5".sha3(), Some((1, b"1".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 	}
 
 	#[test]
@@ -798,83 +830,61 @@ mod tests {
 		// history is 1
 		let foo = jdb.insert(b"foo");
 		jdb.commit(1, &b"1".sha3(), Some((0, b"0".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 
 		// foo is ancient history.
 
 		jdb.remove(&foo);
 		jdb.commit(2, &b"2".sha3(), Some((1, b"1".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 
 		jdb.insert(b"foo");
 		jdb.commit(3, &b"3".sha3(), Some((2, b"2".sha3()))).unwrap();	// BROKEN
+		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.exists(&foo));
 
 		jdb.remove(&foo);
 		jdb.commit(4, &b"4".sha3(), Some((3, b"3".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 
 		jdb.commit(5, &b"5".sha3(), Some((4, b"4".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 		assert!(!jdb.exists(&foo));
 	}
-	
-	#[test]
-/*	fn reopen_remove_two() {
-		let mut dir = ::std::env::temp_dir();
-		dir.push(H32::random().hex());
-
-//		let foo = {
-			let mut jdb = JournalDB::new(dir.to_str().unwrap());
-			// history is 1
-			let foo = jdb.insert(b"foo");
-			jdb.commit(0, &b"0".sha3(), None).unwrap();
-			jdb.commit(1, &b"1".sha3(), None).unwrap();
-
-			// foo is ancient history.
-
-			jdb.insert(b"foo");
-			jdb.commit(2, &b"2".sha3(), Some((0, b"0".sha3()))).unwrap();
-/*			foo
-		};
-
-		{
-			let mut jdb = JournalDB::new(dir.to_str().unwrap());*/
-			jdb.remove(&foo);
-			jdb.commit(3, &b"3".sha3(), Some((1, b"1".sha3()))).unwrap();
-			assert!(jdb.exists(&foo));
-			jdb.remove(&foo);
-			jdb.commit(4, &b"4".sha3(), Some((2, b"2".sha3()))).unwrap();
-			jdb.commit(5, &b"5".sha3(), Some((3, b"3".sha3()))).unwrap();
-			jdb.commit(6, &b"6".sha3(), Some((4, b"4".sha3()))).unwrap();
-			assert!(!jdb.exists(&foo));
-//		}
-	}*/
 	
 	#[test]
 	fn reopen_test() {
 		let mut dir = ::std::env::temp_dir();
 		dir.push(H32::random().hex());
 
-		let foo = {
-			let mut jdb = JournalDB::new(dir.to_str().unwrap());
-			// history is 4
-			let foo = jdb.insert(b"foo");
-			jdb.commit(0, &b"0".sha3(), None).unwrap();
-			jdb.commit(1, &b"1".sha3(), None).unwrap();
-			jdb.commit(2, &b"2".sha3(), None).unwrap();
-			jdb.commit(3, &b"3".sha3(), None).unwrap();
-			jdb.commit(4, &b"4".sha3(), Some((0, b"0".sha3()))).unwrap();
+		let mut jdb = JournalDB::new(dir.to_str().unwrap());
+		// history is 4
+		let foo = jdb.insert(b"foo");
+		jdb.commit(0, &b"0".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
+		jdb.commit(1, &b"1".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
+		jdb.commit(2, &b"2".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
+		jdb.commit(3, &b"3".sha3(), None).unwrap();
+		assert!(jdb.can_reconstruct_refs());
+		jdb.commit(4, &b"4".sha3(), Some((0, b"0".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 
-			// foo is ancient history.
+		// foo is ancient history.
 
-			let foo = jdb.insert(b"foo");
-			let bar = jdb.insert(b"bar");
-			jdb.commit(5, &b"5".sha3(), Some((1, b"1".sha3()))).unwrap();
-			jdb.remove(&foo);
-			jdb.remove(&bar);
-			jdb.commit(6, &b"6".sha3(), Some((2, b"2".sha3()))).unwrap();
-			jdb.insert(b"foo");
-			jdb.insert(b"bar");
-			jdb.commit(7, &b"7".sha3(), Some((3, b"3".sha3()))).unwrap();
-			foo
-		};
+		jdb.insert(b"foo");
+		let bar = jdb.insert(b"bar");
+		jdb.commit(5, &b"5".sha3(), Some((1, b"1".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
+		jdb.remove(&foo);
+		jdb.remove(&bar);
+		jdb.commit(6, &b"6".sha3(), Some((2, b"2".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
+		jdb.insert(b"foo");
+		jdb.insert(b"bar");
+		jdb.commit(7, &b"7".sha3(), Some((3, b"3".sha3()))).unwrap();
+		assert!(jdb.can_reconstruct_refs());
 	}
 	
 	#[test]
@@ -891,16 +901,20 @@ mod tests {
 			// history is 1
 			jdb.insert(b"foo");
 			jdb.commit(0, &b"0".sha3(), None).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 			jdb.commit(1, &b"1".sha3(), None).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 
 			// foo is ancient history.
 
 			jdb.remove(&foo);
 			jdb.commit(2, &b"2".sha3(), Some((0, b"0".sha3()))).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 			assert!(jdb.exists(&foo));
 
 			jdb.insert(b"foo");
 			jdb.commit(3, &b"3".sha3(), Some((1, b"1".sha3()))).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 			assert!(jdb.exists(&foo));
 
 		// incantation to reopen the db
@@ -908,18 +922,21 @@ mod tests {
 
 			jdb.remove(&foo);
 			jdb.commit(4, &b"4".sha3(), Some((2, b"2".sha3()))).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 			assert!(jdb.exists(&foo));
 
 		// incantation to reopen the db
 		}; { let mut jdb = JournalDB::new(dir.to_str().unwrap());
 
 			jdb.commit(5, &b"5".sha3(), Some((3, b"3".sha3()))).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 			assert!(jdb.exists(&foo));
 
 		// incantation to reopen the db
 		}; { let mut jdb = JournalDB::new(dir.to_str().unwrap());
 
 			jdb.commit(6, &b"6".sha3(), Some((4, b"4".sha3()))).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 			assert!(!jdb.exists(&foo));
 		}
 	}
@@ -934,18 +951,22 @@ mod tests {
 			let foo = jdb.insert(b"foo");
 			let bar = jdb.insert(b"bar");
 			jdb.commit(0, &b"0".sha3(), None).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 			jdb.remove(&foo);
 			let baz = jdb.insert(b"baz");
 			jdb.commit(1, &b"1a".sha3(), Some((0, b"0".sha3()))).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 
 			jdb.remove(&bar);
 			jdb.commit(1, &b"1b".sha3(), Some((0, b"0".sha3()))).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 			(foo, bar, baz)
 		};
 
 		{
 			let mut jdb = JournalDB::new(dir.to_str().unwrap());
 			jdb.commit(2, &b"2b".sha3(), Some((1, b"1b".sha3()))).unwrap();
+			assert!(jdb.can_reconstruct_refs());
 			assert!(jdb.exists(&foo));
 			assert!(!jdb.exists(&baz));
 			assert!(!jdb.exists(&bar));
