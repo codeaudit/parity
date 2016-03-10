@@ -226,7 +226,7 @@ impl Account {
 			(true, true) => self.code_hash = Some(SHA3_EMPTY),
 			(true, false) => {
 				let h = db.insert(&self.code_cache);
-				println!("Commiting code of {:?} - {:?}, {:?} hash: {}", db.address(), self.code_hash.is_none(), self.code_cache.is_empty(), &h);
+//				println!("Commiting code of {:?} - {:?}, {:?} hash: {}", db.address(), self.code_hash.is_none(), self.code_cache.is_empty(), &h);
 				self.code_hash = Some(h);
 			}
 			(false, _) => {},
