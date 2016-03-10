@@ -106,7 +106,7 @@ impl<'db> HashDB for AccountDBMut<'db>{
 		let k = value.sha3();
 		let ak = combine_key(&self.address, &k);
 		self.db.emplace(ak, value.to_vec());
-		println!("AccountDB::insert({}) account={:?}, sha3={:?}, used={:?}", value.pretty(), self.address, k, ak);
+//		println!("AccountDB::insert({}) account={:?}, sha3={:?}, used={:?}", value.pretty(), self.address, k, ak);
 		k
 	}
 
