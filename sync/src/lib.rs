@@ -135,7 +135,7 @@ impl EthSync {
 
 		let nonce_fn = |a: &Address| self.chain.state().nonce(a) + U256::one();
 		let sync = self.sync.write().unwrap();
-		sync.insert_transaction(transaction, &nonce_fn);
+		sync.insert_transaction(transaction, &nonce_fn).unwrap_or_else(|e| warn!(target: "sync", "Error adding transaction: {:?}", e));
 	}
 }
 
