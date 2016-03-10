@@ -63,7 +63,6 @@ pub struct JournalDB {
 	overlay: MemoryDB,
 	backing: Arc<Database>,
 	refs: Option<Arc<RwLock<HashMap<H256, RefInfo>>>>,
-	last_era: u64,
 }
 
 impl Clone for JournalDB {
@@ -72,7 +71,6 @@ impl Clone for JournalDB {
 			overlay: MemoryDB::new(),
 			backing: self.backing.clone(),
 			refs: self.refs.clone(),
-			last_era: 0,
 		}
 	}
 }
@@ -121,7 +119,6 @@ impl JournalDB {
 			overlay: MemoryDB::new(),
 			backing: Arc::new(backing),
 			refs: refs,
-			last_era: 0,
 		}
 	}
 
@@ -470,7 +467,6 @@ impl JournalDB {
 			trace!(target: "jdb", "OK: {:?}", refs.clone());
 		}
 
-		self.last_era = now;
 		Ok(0)
 	}
 
