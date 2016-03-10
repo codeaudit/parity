@@ -121,7 +121,7 @@ struct QueueSignal {
 }
 
 impl QueueSignal {
-	#[cfg_attr(feature="dev", allow(bool_comparison))]
+	#[cfg_attr(all(nightly, feature="dev"), allow(bool_comparison))]
 	fn set(&self) {
 		if self.signalled.compare_and_swap(false, true, AtomicOrdering::Relaxed) == false {
 			self.message_channel.send(UserMessage(SyncMessage::BlockVerified)).expect("Error sending BlockVerified message");
@@ -320,6 +320,9 @@ impl BlockQueue {
 
 	/// Mark given block and all its children as bad. Stops verification.
 	pub fn mark_as_bad(&mut self, block_hashes: &[H256]) {
+		if block_hashes.is_empty() {
+			return;
+		}
 		let mut verification_lock = self.verification.lock().unwrap();
 		let mut processing = self.processing.write().unwrap();
 
@@ -345,6 +348,9 @@ impl BlockQueue {
 
 	/// Mark given block as processed
 	pub fn mark_as_good(&mut self, block_hashes: &[H256]) {
+		if block_hashes.is_empty() {
+			return;
+		}
 		let mut processing = self.processing.write().unwrap();
 		for hash in block_hashes {
 			processing.remove(&hash);
